@@ -2,3 +2,5 @@ Visualization/*.png filter=lfs diff=lfs merge=lfs -text
 Visualization/*.jpg filter=lfs diff=lfs merge=lfs -text
 Visualization/*.jpeg filter=lfs diff=lfs merge=lfs -text
 Visualization/*.svg filter=lfs diff=lfs merge=lfs -text
+Data/bank_data_C.csv filter=lfs diff=lfs merge=lfs -text
+Output/cleaned_data_with_segmentation.csv filter=lfs diff=lfs merge=lfs -text
