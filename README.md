@@ -164,9 +164,9 @@ Best k = **3**, balancing low inertia with high silhouette (~0.53).
 
 
 <p align="center">
-  <img src="Dashboard/dashboard_eda.png" width="31%"/>
-  <img src="Dashboard/dashboard_rfm.png" width="31%"/>
-  <img src="Dashboard/dashboard_kmeans.png" width="31%"/>
+  <img src="Visualization/dashboard_eda.png" width="31%"/>
+  <img src="Visualization/dashboard_rfm.png" width="31%"/>
+  <img src="Visualization/dashboard_kmeans.png" width="31%"/>
 </p>
 
 <!-- If images still don't show, swap to RAW links:
