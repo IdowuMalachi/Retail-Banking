@@ -1,25 +1,33 @@
+
 import streamlit as st
 from pathlib import Path
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from io import StringIO
+from datetime import datetime
 
+# ML
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+
+# ---------------------------
+# Page config
+# ---------------------------
 st.set_page_config(
-    page_title="🏦 Retail Banking Intelligence",
+    page_title="🏦 Retail Banking BI",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# ---------------------------
+# Data discovery
+# ---------------------------
 ROOT = Path(__file__).parent
-DATA_CANDIDATES = [
-    ROOT / "Output",
-    ROOT / "Data" / "Output" / "Notebook",
-    ROOT / "Notebook",
-    ROOT,
-]
+DATA_CANDIDATES = [ROOT / "Output", ROOT / "Data" / "Output" / "Notebook", ROOT / "Notebook", ROOT]
 CSV_PRIORITY = [
     "cleaned_data_with_segmentation_and_clusters.csv",
     "cleaned_data_with_segmentation.csv",
@@ -50,58 +58,92 @@ def load_csv(path: Path) -> pd.DataFrame:
         st.warning(f"Failed to read {path.name}: {e}")
         return pd.DataFrame()
 
-def metric_card(label, value, help_text=None):
-    st.metric(label, value, help=help_text)
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {}
+    pairs = {
+        "segment": "Segment",
+        "cluster": "Cluster",
+        "customer_id": "CustomerID",
+        "transaction_date": "TransactionDate",
+    }
+    for k, v in pairs.items():
+        if k in df.columns and v not in df.columns:
+            rename_map[k] = v
+    return df.rename(columns=rename_map)
 
-def kpi_row(df: pd.DataFrame, amount_cols=("Monetary","Amount","TransactionAmount")):
-    c1, c2, c3, c4 = st.columns(4)
+# ---------------------------
+# Metrics helpers
+# ---------------------------
+def compute_kpis(df: pd.DataFrame):
     n_customers = df["CustomerID"].nunique() if "CustomerID" in df.columns else len(df)
-    n_tx = df.shape[0]
-    amt_col = next((c for c in amount_cols if c in df.columns), None)
+    n_rows = len(df)
+    amt_col = next((c for c in ["Monetary","Amount","TransactionAmount","TotalAmount"] if c in df.columns), None)
     total_amt = float(df[amt_col].sum()) if amt_col else 0.0
     avg_amt = float(df[amt_col].mean()) if amt_col else 0.0
-    with c1: metric_card("Unique Customers", f"{n_customers:,}")
-    with c2: metric_card("Rows (Tx)", f"{n_tx:,}")
-    with c3: metric_card("Total Monetary", f"{total_amt:,.2f}")
-    with c4: metric_card("Avg Monetary", f"{avg_amt:,.2f}")
+    return n_customers, n_rows, total_amt, avg_amt, amt_col
 
+def donut_kpi(title: str, value: float, fmt: str = ",.0f", color: str = None):
+    if color is None:
+        # Let Plotly assign a default color
+        colors = None
+    else:
+        colors = [color]
+    fig = go.Figure(go.Pie(
+        labels=[title],
+        values=[max(value, 1e-9)],  # avoid zero donut warnings
+        hole=0.72,
+        marker_colors=colors,
+        textinfo="none"
+    ))
+    fig.update_layout(
+        showlegend=False,
+        annotations=[dict(text=f"{value:{fmt}}", x=0.5, y=0.5, font_size=22, showarrow=False)],
+        height=220,
+        margin=dict(l=0, r=0, t=0, b=0),
+    )
+    return fig
+
+# ---------------------------
+# Filters
+# ---------------------------
 def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
     st.sidebar.subheader("🔎 Filters")
-    pick_gender = "Gender" if "Gender" in df.columns else None
-    pick_location = None
-    for candidate in ["Location", "Branch", "City", "State"]:
-        if candidate in df.columns:
-            pick_location = candidate
-            break
-    if pick_gender:
-        genders = ["All"] + sorted([g for g in df[pick_gender].dropna().unique().tolist()])
-        g_sel = st.sidebar.selectbox("Gender", genders, index=0)
-    else:
-        g_sel = "All"
-    if pick_location:
-        locs = ["All"] + sorted([x for x in df[pick_location].dropna().unique().tolist()])
-        l_sel = st.sidebar.selectbox(pick_location, locs, index=0)
-    else:
-        l_sel = "All"
-    amt_col = next((c for c in ["Monetary","Amount","TransactionAmount"] if c in df.columns), None)
-    if amt_col:
-        min_v, max_v = float(df[amt_col].min()), float(df[amt_col].max())
-        v1, v2 = st.sidebar.slider(f"{amt_col} range", min_value=float(min_v), max_value=float(max_v),
-                                   value=(float(min_v), float(max_v)))
-    else:
-        v1, v2 = None, None
     out = df.copy()
-    if pick_gender and g_sel != "All":
-        out = out[out[pick_gender] == g_sel]
-    if pick_location and l_sel != "All":
-        out = out[out[pick_location] == l_sel]
-    if amt_col and v1 is not None:
-        out = out[(out[amt_col] >= v1) & (out[amt_col] <= v2)]
+
+    if "Gender" in out.columns:
+        gender = st.sidebar.selectbox("Gender", ["All"] + sorted(out["Gender"].dropna().unique().tolist()))
+        if gender != "All":
+            out = out[out["Gender"] == gender]
+
+    loc_field = next((c for c in ["Location","Branch","City","State","Region"] if c in out.columns), None)
+    if loc_field:
+        loc = st.sidebar.selectbox(loc_field, ["All"] + sorted(out[loc_field].dropna().unique().tolist()))
+        if loc != "All":
+            out = out[out[loc_field] == loc]
+
+    amt_col = next((c for c in ["Monetary","Amount","TransactionAmount","TotalAmount"] if c in out.columns), None)
+    if amt_col:
+        mn, mx = float(out[amt_col].min()), float(out[amt_col].max())
+        a, b = st.sidebar.slider(f"{amt_col} range", min_value=float(mn), max_value=float(mx), value=(float(mn), float(mx)))
+        out = out[(out[amt_col] >= a) & (out[amt_col] <= b)]
+
+    date_col = next((c for c in ["TransactionDate","Date"] if c in out.columns), None)
+    if date_col:
+        try:
+            tmp = pd.to_datetime(out[date_col], errors="coerce")
+            min_d, max_d = tmp.min(), tmp.max()
+            sel = st.sidebar.date_input("Date window", value=(min_d, max_d))
+            if isinstance(sel, tuple) and len(sel) == 2:
+                start, end = sel
+                mask = (tmp >= pd.to_datetime(start)) & (tmp <= pd.to_datetime(end))
+                out = out[mask]
+        except Exception:
+            pass
+
     if "CustomerID" in out.columns:
-        st.sidebar.text_input("Search CustomerID", key="cust_search")
-        q = st.session_state.get("cust_search", "").strip()
-        if q:
-            out = out[out["CustomerID"].astype(str).str.contains(q, case=False, na=False)]
+        q = st.sidebar.text_input("Search CustomerID contains")
+        if q.strip():
+            out = out[out["CustomerID"].astype(str).str.contains(q.strip(), case=False, na=False)]
     return out
 
 def section_header(title: str, subtitle: str = ""):
@@ -109,6 +151,9 @@ def section_header(title: str, subtitle: str = ""):
     if subtitle:
         st.caption(subtitle)
 
+# ---------------------------
+# Load data
+# ---------------------------
 found = find_first_csv()
 st.sidebar.success(f"Detected {len(found)} candidate tables")
 if not found:
@@ -116,60 +161,207 @@ if not found:
     st.stop()
 
 chosen_name = st.sidebar.selectbox("Primary dataset", list(found.keys()), index=0)
-main_df = load_csv(found[chosen_name])
-
-if main_df.empty:
+df = load_csv(found[chosen_name])
+df = normalize_columns(df)
+if df.empty:
     st.error("The selected dataset is empty or failed to load.")
     st.stop()
 
-rename_map = {}
-if "segment" in main_df.columns and "Segment" not in main_df.columns:
-    rename_map["segment"] = "Segment"
-if "cluster" in main_df.columns and "Cluster" not in main_df.columns:
-    rename_map["cluster"] = "Cluster"
-main_df = main_df.rename(columns=rename_map)
+# ---------------------------
+# Navigation
+# ---------------------------
+st.sidebar.title("🏦 Retail Banking BI")
+page = st.sidebar.radio("Navigate", [
+    "🏠 Overview",
+    "👤 Customer Profile",
+    "🧭 Segment Insights",
+    "🗺️ Geo View",
+    "📆 Seasonality",
+    "🤖 Churn Prediction",
+    "📂 Data Explorer",
+    "⬇️ Export",
+])
 
-st.sidebar.title("🏦 Retail Banking Intelligence")
-page = st.sidebar.radio(
-    "Navigate",
-    [
-        "🏠 Overview",
-        "📂 Data Explorer",
-        "🧭 RFM Analytics",
-        "🧩 Clustering",
-        "📈 EDA Visuals",
-        "⬇️ Export",
-    ],
-)
+# Apply global filters for most pages
+filtered = sidebar_filters(df) if page not in {"👤 Customer Profile","🤖 Churn Prediction"} else df
 
-filtered = sidebar_filters(main_df)
-
+# ---------------------------
+# Pages
+# ---------------------------
 if page == "🏠 Overview":
     st.title("🏦 Retail Banking Intelligence Dashboard")
-    st.caption(f"Primary table: **{chosen_name}** — Rows: {len(main_df):,}")
-    with st.container():
-        kpi_row(filtered)
+    st.caption(f"Primary table: **{chosen_name}** — Rows: {len(df):,}")
+
+    # Donut KPIs
+    n_customers, n_rows, total_amt, avg_amt, amt_col = compute_kpis(filtered)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.subheader("Unique Customers")
+        st.plotly_chart(donut_kpi("Unique Customers", n_customers, fmt=",.0f"), use_container_width=True)
+    with c2:
+        st.subheader("Rows (Tx)")
+        st.plotly_chart(donut_kpi("Rows (Tx)", n_rows, fmt=",.0f"), use_container_width=True)
+    with c3:
+        st.subheader("Total Monetary")
+        st.plotly_chart(donut_kpi("Total Monetary", total_amt, fmt=",.2f"), use_container_width=True)
+    with c4:
+        st.subheader("Avg Monetary")
+        st.plotly_chart(donut_kpi("Avg Monetary", avg_amt, fmt=",.2f"), use_container_width=True)
+
     st.markdown("---")
     section_header("Distributions")
-    possible = ["Monetary","Amount","TransactionAmount","Frequency","Recency"]
-    numeric_available = [c for c in possible if c in filtered.columns]
-    if numeric_available:
-        ncols = min(3, len(numeric_available))
-        cols = st.columns(ncols)
-        for i, col in enumerate(numeric_available[:ncols]):
-            with cols[i]:
-                fig = px.histogram(filtered, x=col, nbins=40, title=f"{col} Distribution")
-                st.plotly_chart(fig, use_container_width=True)
+    cols = [c for c in ["Monetary","Amount","TransactionAmount","Frequency","Recency"] if c in filtered.columns]
+    holders = st.columns(min(3, len(cols))) if cols else []
+    for ax, col in zip(holders, cols[:3]):
+        with ax:
+            st.plotly_chart(px.histogram(filtered, x=col, nbins=40, title=f"{col} Distribution"), use_container_width=True)
+
     if "Segment" in filtered.columns:
         section_header("Segment Mix")
-        seg_counts = filtered["Segment"].value_counts().reset_index()
-        seg_counts.columns = ["Segment","Count"]
-        fig = px.bar(seg_counts, x="Segment", y="Count", title="Customers by Segment")
+        mix = filtered["Segment"].value_counts().reset_index()
+        mix.columns = ["Segment","Count"]
+        st.plotly_chart(px.bar(mix, x="Segment", y="Count", title="Customers by Segment"), use_container_width=True)
+
+elif page == "👤 Customer Profile":
+    st.title("👤 Customer 360° Profile")
+    if "CustomerID" not in df.columns:
+        st.info("No CustomerID column found.")
+    else:
+        cust_id = st.text_input("Enter CustomerID (exact):")
+        if cust_id:
+            sub = df[df["CustomerID"].astype(str) == str(cust_id)]
+            if sub.empty:
+                st.warning("No records found for that CustomerID.")
+            else:
+                n_customers, n_rows, total_amt, avg_amt, amt_col = compute_kpis(sub)
+                c1, c2, c3, c4 = st.columns(4)
+                seg = sub["Segment"].iloc[0] if "Segment" in sub.columns else "N/A"
+                rec = sub["Recency"].iloc[0] if "Recency" in sub.columns else np.nan
+                freq = sub["Frequency"].iloc[0] if "Frequency" in sub.columns else np.nan
+                with c1: st.plotly_chart(donut_kpi("Segment", 1, fmt=""), use_container_width=True); st.caption(f"Segment: **{seg}**")
+                with c2: st.plotly_chart(donut_kpi("Frequency", float(freq) if pd.notna(freq) else 0), use_container_width=True)
+                with c3: st.plotly_chart(donut_kpi("Recency", float(rec) if pd.notna(rec) else 0), use_container_width=True)
+                with c4: st.plotly_chart(donut_kpi("Total Monetary", total_amt, fmt=",.2f"), use_container_width=True)
+
+                date_col = next((c for c in ["TransactionDate","Date"] if c in sub.columns), None)
+                if date_col:
+                    t = sub.copy()
+                    t[date_col] = pd.to_datetime(t[date_col], errors="coerce")
+                    t = t.dropna(subset=[date_col])
+                    if amt_col:
+                        st.plotly_chart(px.line(t.sort_values(date_col), x=date_col, y=amt_col, title="Spend Over Time"), use_container_width=True)
+                st.dataframe(sub.head(300), use_container_width=True)
+
+elif page == "🧭 Segment Insights":
+    st.title("🧭 Segment Insights & Recommendations")
+    if "Segment" not in filtered.columns:
+        st.info("No 'Segment' column found.")
+    else:
+        base_cols = [c for c in ["Recency","Frequency","Monetary"] if c in filtered.columns]
+        if base_cols:
+            prof = filtered.groupby("Segment")[base_cols].mean().reset_index()
+            melted = prof.melt(id_vars="Segment", var_name="Metric", value_name="Mean")
+            st.plotly_chart(px.bar(melted, x="Segment", y="Mean", color="Metric", barmode="group",
+                                   title="Average R/F/M by Segment"), use_container_width=True)
+        rec_map = {
+            "VIP": "High spend & loyalty. Offer premium rewards, exclusive access, and early-bird promos.",
+            "Loyal": "Consistent activity. Maintain engagement with points multipliers and refer-a-friend bonuses.",
+            "At Risk": "Falling activity. Send win-back offers, reminders, and personalized reactivation bundles.",
+            "Hibernating": "Very low activity. Use soft-touch campaigns, surveys, and seasonal incentives.",
+            "New": "Onboarding stage. Educate about benefits, set up alerts, and welcome discounts.",
+        }
+        st.subheader("Recommendations by Segment")
+        for seg, txt in rec_map.items():
+            st.markdown(f"**{seg}:** {txt}")
+        seg_sel = st.selectbox("Drill into segment", sorted(filtered["Segment"].dropna().unique().tolist()))
+        seg_df = filtered[filtered["Segment"] == seg_sel]
+        st.dataframe(seg_df.head(500), use_container_width=True)
+        if base_cols and len(base_cols) >= 2:
+            st.plotly_chart(px.scatter(seg_df, x=base_cols[0], y=base_cols[1],
+                                       title=f"{seg_sel}: {base_cols[0]} vs {base_cols[1]}"),
+                            use_container_width=True)
+
+elif page == "🗺️ Geo View":
+    st.title("🗺️ Geographic Distribution")
+    lat_col = next((c for c in ["lat","latitude","Lat","Latitude"] if c in filtered.columns), None)
+    lon_col = next((c for c in ["lon","lng","longitude","Long","Longitude"] if c in filtered.columns), None)
+    region_col = next((c for c in ["State","Region","City","Location","Branch"] if c in filtered.columns), None)
+    amt_col = next((c for c in ["Monetary","Amount","TransactionAmount","TotalAmount"] if c in filtered.columns), None)
+    if lat_col and lon_col:
+        fig = px.scatter_geo(filtered, lat=lat_col, lon=lon_col,
+                             size=amt_col if amt_col else None,
+                             hover_name=region_col if region_col else None,
+                             title="Customer/Transaction Locations")
         st.plotly_chart(fig, use_container_width=True)
+    elif region_col:
+        if amt_col:
+            top = filtered.groupby(region_col)[amt_col].sum().reset_index().sort_values(amt_col, ascending=False).head(30)
+            fig = px.bar(top, x=region_col, y=amt_col, title=f"Top {region_col} by {amt_col}")
+        else:
+            top = filtered[region_col].value_counts().reset_index().rename(columns={"index":region_col, region_col:"Count"}).head(30)
+            fig = px.bar(top, x=region_col, y="Count", title=f"Top {region_col} by Count")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No geographic columns detected. Add 'City', 'State', 'Region', or lat/lon to enable maps.")
+
+elif page == "📆 Seasonality":
+    st.title("📆 Seasonality & Calendar Heatmap")
+    date_col = next((c for c in ["TransactionDate","Date"] if c in filtered.columns), None)
+    amt_col = next((c for c in ["Monetary","Amount","TransactionAmount","TotalAmount"] if c in filtered.columns), None)
+    if not date_col:
+        st.info("No date column found (looking for TransactionDate or Date).")
+    else:
+        t = filtered.copy()
+        t[date_col] = pd.to_datetime(t[date_col], errors="coerce")
+        t = t.dropna(subset=[date_col])
+        if amt_col:
+            s = t.groupby(t[date_col].dt.date)[amt_col].sum().reset_index()
+            s.columns = ["Date","Total"]
+            st.plotly_chart(px.line(s, x="Date", y="Total", title="Daily Total Amount"), use_container_width=True)
+        heat = t.groupby([t[date_col].dt.month.rename("Month"), t[date_col].dt.day.rename("Day")]).size().reset_index(name="Count")
+        st.plotly_chart(px.density_heatmap(heat, x="Day", y="Month", z="Count", title="Calendar Heatmap (Count)",
+                                           nbinsx=31, nbinsy=12, text_auto=True),
+                        use_container_width=True)
+
+elif page == "🤖 Churn Prediction":
+    st.title("🤖 Churn Prediction (Baseline)")
+    work = df.copy()
+    features = [c for c in ["Recency","Frequency","Monetary"] if c in work.columns]
+    if len(features) < 2:
+        st.info("Need at least two of Recency/Frequency/Monetary to build a simple model.")
+    else:
+        if "Churn" in work.columns:
+            work["target"] = work["Churn"].astype(int)
+            st.caption("Using existing 'Churn' column as target.")
+        else:
+            thr = work["Recency"].quantile(0.80) if "Recency" in work.columns else work[features[0]].quantile(0.80)
+            work["target"] = (work[features[0]] >= thr).astype(int)
+            st.caption(f"Derived churn label: 1 if {features[0]} ≥ {thr:.1f} (top 20% most inactive).")
+        X = work[features].fillna(0.0)
+        y = work["target"]
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+        scaler = StandardScaler()
+        X_train_sc = scaler.fit_transform(X_train)
+        X_test_sc = scaler.transform(X_test)
+        model = LogisticRegression(max_iter=1000)
+        model.fit(X_train_sc, y_train)
+        proba = model.predict_proba(X_test_sc)[:,1]
+        auc = roc_auc_score(y_test, proba)
+        st.metric("ROC-AUC", f"{auc:.3f}")
+        coefs = pd.DataFrame({"Feature": features, "Coefficient": model.coef_[0]}).sort_values("Coefficient", key=lambda s: s.abs(), ascending=False)
+        st.subheader("Feature Influence (Logistic Coefficients)")
+        st.plotly_chart(px.bar(coefs, x="Feature", y="Coefficient", title="Model Coefficients"), use_container_width=True)
+        if set(features).issubset(filtered.columns):
+            scores = model.predict_proba(scaler.transform(filtered[features].fillna(0.0)))[:,1]
+            out = filtered.copy()
+            out["Churn_Risk_Score"] = np.round(scores, 4)
+            st.subheader("Scored Customers (Filtered View)")
+            st.dataframe(out.head(1000), use_container_width=True)
+            st.download_button("Download scored customers (CSV)", out.to_csv(index=False).encode("utf-8"),
+                               file_name="churn_scored_customers.csv", mime="text/csv")
 
 elif page == "📂 Data Explorer":
     st.title("📂 Data Explorer")
-    st.write("Preview the filtered dataset and download selections.")
     st.dataframe(filtered.head(1000), use_container_width=True)
     st.caption(f"Showing up to 1,000 rows. Filtered total: {len(filtered):,}")
     with st.expander("Quick Group-By (pivot)"):
@@ -184,116 +376,15 @@ elif page == "📂 Data Explorer":
             else:
                 pivot = getattr(filtered.groupby(by)[agg_col], agg_fn)().reset_index(name=f"{agg_fn}_{agg_col}")
             st.dataframe(pivot, use_container_width=True)
-            fig = px.bar(pivot, x=by[0], y=pivot.columns[-1], color=by[1] if len(by) > 1 else None,
-                         title="Group-By Chart")
-            st.plotly_chart(fig, use_container_width=True)
-
-elif page == "🧭 RFM Analytics":
-    st.title("🧭 RFM Analytics")
-    df = filtered.copy()
-    has_rfm = all(c in df.columns for c in ["Recency","Frequency","Monetary"])
-    if not has_rfm:
-        st.info("RFM base columns not found; showing numeric overview instead.")
-        st.dataframe(df.describe(include="all").T)
-        st.stop()
-    c1, c2, c3 = st.columns(3)
-    with c1: st.plotly_chart(px.histogram(df, x="Recency", nbins=40, title="Recency"), use_container_width=True)
-    with c2: st.plotly_chart(px.histogram(df, x="Frequency", nbins=40, title="Frequency"), use_container_width=True)
-    with c3: st.plotly_chart(px.histogram(df, x="Monetary", nbins=40, title="Monetary"), use_container_width=True)
-    if not {"R_Score","F_Score","M_Score"}.issubset(df.columns):
-        df["R_Score"] = pd.qcut(df["Recency"], 5, labels=[5,4,3,2,1]).astype(int)
-        df["F_Score"] = pd.qcut(df["Frequency"].rank(method="first"), 5, labels=[1,2,3,4,5]).astype(int)
-        df["M_Score"] = pd.qcut(df["Monetary"], 5, labels=[1,2,3,4,5]).astype(int)
-    df["RFM_Sum"] = df[["R_Score","F_Score","M_Score"]].sum(axis=1)
-    st.plotly_chart(px.histogram(df, x="RFM_Sum", nbins=15, title="RFM Score Sum"), use_container_width=True)
-    if "Segment" in df.columns:
-        section_header("Segment Profiles", "Average R/F/M by Segment")
-        prof = df.groupby("Segment")[["Recency","Frequency","Monetary"]].mean().reset_index()
-        prof_melt = prof.melt(id_vars="Segment", var_name="Metric", value_name="Mean")
-        fig = px.bar(prof_melt, x="Segment", y="Mean", color="Metric", barmode="group")
-        st.plotly_chart(fig, use_container_width=True)
-    section_header("Pairwise Relationships")
-    num_pair = [c for c in ["Recency","Frequency","Monetary"] if c in df.columns]
-    if len(num_pair) >= 2:
-        fig = px.scatter(df, x=num_pair[0], y=num_pair[1], color="Segment" if "Segment" in df.columns else None,
-                         title=f"{num_pair[0]} vs {num_pair[1]}")
-        st.plotly_chart(fig, use_container_width=True)
-
-elif page == "🧩 Clustering":
-    st.title("🧩 K-Means / Cluster Views")
-    df = filtered.copy()
-    features = [c for c in ["Recency","Frequency","Monetary"] if c in df.columns]
-    if not features:
-        st.info("No R/F/M columns detected. Showing numeric columns summary.")
-        st.dataframe(df.describe().T)
-        st.stop()
-    if "Cluster" not in df.columns:
-        st.warning("No 'Cluster' column detected in the dataset. Visualizing features only.")
-        if len(features) >= 3:
-            fig = px.scatter_3d(df, x=features[0], y=features[1], z=features[2], title="Feature Space")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            fig = px.scatter(df, x=features[0], y=features[1], title="Feature Space")
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        n_clusters = int(df["Cluster"].nunique())
-        st.caption(f"Detected {n_clusters} clusters")
-        agg = df.groupby("Cluster")[features].mean().reset_index()
-        melted = agg.melt(id_vars="Cluster", var_name="Feature", value_name="Mean")
-        fig = px.bar(melted, x="Feature", y="Mean", color="Cluster", barmode="group",
-                     title="Mean Feature Values by Cluster")
-        st.plotly_chart(fig, use_container_width=True)
-        if len(features) >= 2:
-            fig = px.scatter(df, x=features[0], y=features[1], color=df["Cluster"].astype(str),
-                             title=f"{features[0]} vs {features[1]} by Cluster",
-                             hover_data=[c for c in df.columns if c not in features[:2]][:5])
-            st.plotly_chart(fig, use_container_width=True)
-
-elif page == "📈 EDA Visuals":
-    st.title("📈 EDA Visuals")
-    candidates = [
-        "Visualization/TransactionAmount_(capped_1%-99%).png",
-        "Visualization/CustAccountBalance_(capped_1%-99%).png",
-        "Visualization/Top_10_Locations_by_Transaction_Count.png",
-        "Visualization/Transactions_by_Gender.png",
-        "Visualization/plot_histograms_features.png",
-        "Visualization/Customer_Segments_by_RFM_Score.png",
-        "Visualization/plot_elbow_inertia.png",
-        "Visualization/plot_silhouette_by_k.png",
-        "Visualization/plot_pca_clusters.png",
-        "Visualization/plot_radar_cluster_profiles.png",
-        "Visualization/plot_stacked_cluster_segment.png",
-        "Visualization/plot_heatmap_segment_cluster.png",
-        "Visualization/plot_boxplots_features_by_cluster.png",
-    ]
-    grid_cols = st.slider("Images per row", 1, 4, 2)
-    paths = []
-    for rel in candidates:
-        p = ROOT / rel
-        if p.exists():
-            paths.append(p)
-    if not paths:
-        st.info("No images found under Visualization/. Add PNGs to show static EDA charts.")
-    else:
-        rows = [paths[i:i+grid_cols] for i in range(0, len(paths), grid_cols)]
-        for row in rows:
-            cols = st.columns(len(row))
-            for c, p in zip(cols, row):
-                with c:
-                    st.image(str(p), caption=p.name, use_container_width=True)
+            st.plotly_chart(px.bar(pivot, x=by[0], y=pivot.columns[-1], color=by[1] if len(by) > 1 else None,
+                                   title="Group-By Chart"), use_container_width=True)
 
 elif page == "⬇️ Export":
     st.title("⬇️ Export")
-    st.write("Download the **filtered** dataset as CSV for offline analysis.")
     csv = filtered.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download filtered CSV",
-        csv,
-        file_name="filtered_dataset.csv",
-        mime="text/csv"
-    )
+    st.download_button("Download filtered CSV", csv, file_name="filtered_dataset.csv", mime="text/csv")
     st.write("Copy a few rows as CSV:")
     st.code(filtered.head(10).to_csv(index=False))
 
 st.markdown("---")
-st.caption("Built for Idowu Malachi • Streamlit app using your repo's CSVs and visualizations.")
+st.caption("Built for Idowu Malachi • BI app with KPI donuts, Customer 360, Segment insights, Geo view, Seasonality, and Churn baseline.")
