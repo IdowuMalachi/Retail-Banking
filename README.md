@@ -211,11 +211,4 @@ Each dashboard is backed by Streamlit and Git LFS snapshots.
 ---
 
 ## 🚀 Deployment Path
-A Streamlit prototype dashboard (`app_streamlit.py`) enables:
-- Live customer filtering by recency range.
-- On-the-fly cluster visualization.
-- Simulated “what-if” marketing scenarios.
-
-Launch locally:
-```bash
-streamlit run app_streamlit.py
+(https://retail-banking-7fvr6bbwdvwzdu3pjp3e8y.streamlit.app/)
