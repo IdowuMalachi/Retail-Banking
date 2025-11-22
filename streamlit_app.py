@@ -17,38 +17,48 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# CSS: background + cards, LinkedIn-style look
+# CSS: colorful background + cards
 # -------------------------------------------------
 st.markdown(
     """
 <style>
-/* Page background */
+/* App background with soft gradient */
 html, body, [data-testid="stAppViewContainer"] {
-    background-color: #f5f7fb !important;
+    background: radial-gradient(circle at top left, #e0edff 0, #f5f7fb 40%, #f9fafb 100%) !important;
 }
 
-/* Main container */
+/* main container */
 .block-container {
     padding-top: 1.2rem;
     padding-bottom: 2rem;
 }
 
+/* header area */
+h3 {
+    color: #0f172a;
+}
+
 /* KPI cards */
 .kpi-card {
-    padding: 0.8rem 1rem;
-    border-radius: 16px;
-    background: #ffffff;
-    box-shadow: 0 4px 18px rgba(15, 23, 42, 0.08);
-    border: 1px solid #e5e7eb;
+    padding: 0.9rem 1.1rem;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #ffffff 0%, #eef2ff 45%, #e0f2fe 100%);
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+    border: 1px solid rgba(148, 163, 184, 0.4);
 }
 .kpi-title {
     font-size: 0.9rem;
-    color: #6b7280;
+    color: #475569;
     margin-bottom: 4px;
 }
 .small-note {
-    color: #6b7280;
-    font-size: 0.85rem;
+    color: #64748b;
+    font-size: 0.86rem;
+}
+
+/* Tabs underline color */
+[data-baseweb="tab-highlight"] {
+    background-color: #2563eb !important;
 }
 </style>
 """,
@@ -146,7 +156,6 @@ def format_short(value: float) -> str:
     else:
         return f"{sign}{v:.0f}"
 
-    # 2 decimal digits then trim to at most 4 chars
     s = f"{num:.2f}".rstrip("0").rstrip(".")
     if len(s) > 4:
         s = s[:4]
@@ -279,21 +288,23 @@ if "CustomerID" in work.columns:
 st.sidebar.caption(f"Filtered rows: {len(work):,}")
 
 # -------------------------------------------------
-# KPI donuts + cards (with short numbers)
+# KPI donuts + colorful cards
 # -------------------------------------------------
 def donut_kpi(title: str, value: float) -> go.Figure:
-    """Donut with short center text and LinkedIn-style blue ring."""
+    """Donut with short center text and blue ring."""
     short = format_short(value)
     fig = go.Figure(
         go.Pie(
             labels=[title],
             values=[max(float(value), 1e-9)],
-            hole=0.72,
+            hole=0.7,
             textinfo="none",
-            marker=dict(colors=["#2563eb", "#e5e7eb"]),
+            marker=dict(colors=["#2563eb", "#93c5fd"]),
         )
     )
     fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
         showlegend=False,
         annotations=[
             dict(
@@ -301,6 +312,7 @@ def donut_kpi(title: str, value: float) -> go.Figure:
                 x=0.5,
                 y=0.5,
                 font_size=22,
+                font_color="#0f172a",
                 showarrow=False,
             )
         ],
@@ -350,29 +362,104 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     ["Overview", "Segments", "Customers", "Seasonality", "Geography", "Data / Export"]
 )
 
-# --- Overview ---
+# --- Overview (advanced histograms + 3D RFM if available) ---
 with tab1:
-    st.subheader("📊 Distributions")
+    st.subheader("📊 Advanced Distributions & RFM Space")
+
     dist_cols = [c for c in ["Monetary", "Frequency", "Recency"] if c in work.columns]
     cols = st.columns(len(dist_cols) if dist_cols else 1)
     for ax, col in zip(cols, dist_cols):
         with ax:
-            fig = px.histogram(work, x=col, nbins=40, title=f"{col} Distribution")
+            fig = px.histogram(
+                work,
+                x=col,
+                nbins=40,
+                title=f"{col} Distribution",
+                color_discrete_sequence=["#0ea5e9"],
+            )
+            fig.update_traces(opacity=0.75)
             fig.update_layout(
-                xaxis_tickformat=".2s",  # short axis numbers: 10k, 2M
+                xaxis_tickformat=".2s",
                 yaxis_tickformat=".2s",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(248,250,252,1)",
             )
             st.plotly_chart(fig, use_container_width=True)
+
+    # 3D RFM scatter
+    if all(c in work.columns for c in ["Recency", "Frequency", "Monetary"]):
+        st.markdown("### 🎯 RFM 3D Space")
+        sample = work.copy()
+        if len(sample) > 5000:
+            sample = sample.sample(5000, random_state=42)
+
+        fig3d = px.scatter_3d(
+            sample,
+            x="Recency",
+            y="Frequency",
+            z="Monetary",
+            color=sample["Segment"] if "Segment" in sample.columns else None,
+            color_discrete_sequence=px.colors.sequential.Blues_r,
+            opacity=0.85,
+        )
+        fig3d.update_layout(
+            scene=dict(
+                xaxis_title="Recency",
+                yaxis_title="Frequency",
+                zaxis_title="Monetary",
+            ),
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig3d, use_container_width=True)
 
 # --- Segments ---
 with tab2:
     st.subheader("🧭 Segment Breakdown")
+
     if "Segment" in work.columns:
         seg_counts = work["Segment"].value_counts().reset_index()
         seg_counts.columns = ["Segment", "Count"]
-        fig = px.bar(seg_counts, x="Segment", y="Count", title="Customers per Segment")
-        fig.update_layout(yaxis_tickformat=".2s")
-        st.plotly_chart(fig, use_container_width=True)
+
+        # colorful donut for mix
+        fig_seg_pie = px.pie(
+            seg_counts,
+            names="Segment",
+            values="Count",
+            hole=0.45,
+            color_discrete_sequence=px.colors.sequential.Blues_r,
+            title="Segment Mix",
+        )
+        fig_seg_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig_seg_pie, use_container_width=True)
+
+        # stacked bar by segment vs maybe Gender or Cluster
+        breakdown_dim = None
+        if "Gender" in work.columns:
+            breakdown_dim = "Gender"
+        elif "Cluster" in work.columns:
+            breakdown_dim = "Cluster"
+
+        if breakdown_dim:
+            st.markdown(f"#### Segment vs {breakdown_dim}")
+            tmp = (
+                work.groupby(["Segment", breakdown_dim])
+                .size()
+                .reset_index(name="Count")
+            )
+            fig_stack = px.bar(
+                tmp,
+                x="Segment",
+                y="Count",
+                color=breakdown_dim,
+                barmode="stack",
+                color_discrete_sequence=px.colors.sequential.Blues,
+            )
+            fig_stack.update_layout(
+                yaxis_tickformat=".2s",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(248,250,252,1)",
+            )
+            st.plotly_chart(fig_stack, use_container_width=True)
     else:
         st.info("No 'Segment' column found.")
 
@@ -392,7 +479,8 @@ with tab3:
 
 # --- Seasonality ---
 with tab4:
-    st.subheader("📆 Seasonality")
+    st.subheader("📆 Seasonality (Gradient Area)")
+
     dcol = next((c for c in ["TransactionDate", "Date"] if c in work.columns), None)
     if dcol and amt_col:
         t = work.copy()
@@ -401,15 +489,33 @@ with tab4:
         if not t.empty:
             s = t.groupby(t[dcol].dt.date)[amt_col].sum().reset_index()
             s.columns = ["Date", "Total"]
-            fig = px.line(s, x="Date", y="Total", title="Daily Total Amount")
-            fig.update_layout(yaxis_tickformat=".2s")
-            st.plotly_chart(fig, use_container_width=True)
+
+            fig_area = go.Figure()
+            fig_area.add_trace(
+                go.Scatter(
+                    x=s["Date"],
+                    y=s["Total"],
+                    mode="lines",
+                    line=dict(color="#1d4ed8", width=2.5),
+                    fill="tozeroy",
+                    fillcolor="rgba(37,99,235,0.25)",
+                )
+            )
+            fig_area.update_layout(
+                title="Daily Total Amount",
+                yaxis_tickformat=".2s",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(248,250,252,1)",
+                margin=dict(l=0, r=0, t=40, b=0),
+            )
+            st.plotly_chart(fig_area, use_container_width=True)
     else:
         st.info("Need a Date/TransactionDate column and an amount column.")
 
 # --- Geography ---
 with tab5:
     st.subheader("🗺️ Geography (Top Regions)")
+
     reg = next(
         (c for c in ["City", "State", "Region", "Branch", "Location", "Country"] if c in work.columns),
         None,
@@ -421,20 +527,42 @@ with tab5:
                 .sum()
                 .reset_index()
                 .sort_values(amt_col, ascending=False)
-                .head(30)
+                .head(25)
             )
-            fig = px.bar(top, x=reg, y=amt_col, title=f"Top {reg} by {amt_col}")
+            fig_geo = px.bar(
+                top,
+                x=amt_col,
+                y=reg,
+                orientation="h",
+                title=f"Top {reg} by {amt_col}",
+                color=amt_col,
+                color_continuous_scale=px.colors.sequential.Blues,
+            )
         else:
             top = (
                 work[reg]
                 .value_counts()
                 .reset_index()
                 .rename(columns={"index": reg, reg: "Count"})
-                .head(30)
+                .head(25)
             )
-            fig = px.bar(top, x=reg, y="Count", title=f"Top {reg} by Count")
-        fig.update_layout(yaxis_tickformat=".2s")
-        st.plotly_chart(fig, use_container_width=True)
+            fig_geo = px.bar(
+                top,
+                x="Count",
+                y=reg,
+                orientation="h",
+                title=f"Top {reg} by Count",
+                color="Count",
+                color_continuous_scale=px.colors.sequential.Blues,
+            )
+
+        fig_geo.update_layout(
+            xaxis_tickformat=".2s",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(248,250,252,1)",
+           margin=dict(l=0, r=0, t=40, b=0),
+        )
+        st.plotly_chart(fig_geo, use_container_width=True)
     else:
         st.info("No region/city/branch columns detected.")
 
