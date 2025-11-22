@@ -5,7 +5,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
 import glob
-from typing import Optional, Dict
 
 # -------------------------------------------------
 # Page configuration
@@ -14,16 +13,21 @@ st.set_page_config(
     page_title="🏦 BankTrust BI",
     layout="wide",
     page_icon="🏦",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # -------------------------------------------------
-# Simple CSS to look like a polished LinkedIn demo
+# CSS: background + cards, LinkedIn-style look
 # -------------------------------------------------
 st.markdown(
     """
 <style>
-/* remove extra padding and default chrome */
+/* Page background */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #f5f7fb !important;
+}
+
+/* Main container */
 .block-container {
     padding-top: 1.2rem;
     padding-bottom: 2rem;
@@ -32,10 +36,10 @@ st.markdown(
 /* KPI cards */
 .kpi-card {
     padding: 0.8rem 1rem;
-    border-radius: 14px;
+    border-radius: 16px;
     background: #ffffff;
-    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
-    border: 1px solid rgba(0, 0, 0, 0.06);
+    box-shadow: 0 4px 18px rgba(15, 23, 42, 0.08);
+    border: 1px solid #e5e7eb;
 }
 .kpi-title {
     font-size: 0.9rem;
@@ -55,22 +59,24 @@ st.markdown(
 # Data helpers
 # -------------------------------------------------
 SEARCH_DIRS = [
-    ".", "Output", "Notebook", "Data", "Data/Output", "Data/Output/Notebook", "Visualization"
+    ".",
+    "Output",
+    "Notebook",
+    "Data",
+    "Data/Output",
+    "Data/Output/Notebook",
+    "Visualization",
 ]
 
 
-def discover_files() -> Dict[str, str]:
-    """
-    Look for CSV/Parquet files in common folders and return
-    {label: path} sorted so your main files appear first.
-    """
+def discover_files():
+    """Find CSV / Parquet files in common project folders."""
     found = {}
     for d in SEARCH_DIRS:
         for pat in ("*.csv", "*.parquet", "**/*.csv", "**/*.parquet"):
             for p in glob.glob(str(Path(d) / pat), recursive=True):
                 path = Path(p)
                 name = path.name
-                # priority: your main tables first
                 priority = 0
                 if name in {
                     "cleaned_data_with_segmentation_and_clusters.csv",
@@ -79,11 +85,10 @@ def discover_files() -> Dict[str, str]:
                     "rfm_with_segments.csv",
                     "rfm_table.csv",
                 }:
-                    priority = -1
+                    priority = -1  # bubble these to the top
                 label = f"{name}  —  {p}"
                 found[label] = (priority, str(path))
 
-    # sort by priority then label text
     sorted_items = sorted(
         ((k, v[1]) for k, v in found.items()),
         key=lambda item: (found[item[0]][0], item[0].lower()),
@@ -92,7 +97,7 @@ def discover_files() -> Dict[str, str]:
 
 
 @st.cache_data(show_spinner=False)
-def load_table(path: str, sample_max: Optional[int]) -> pd.DataFrame:
+def load_table(path, sample_max):
     if path.endswith(".parquet"):
         df = pd.read_parquet(path)
     else:
@@ -103,10 +108,7 @@ def load_table(path: str, sample_max: Optional[int]) -> pd.DataFrame:
 
 
 def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Standardize column names so the app works even if your
-    CSV uses lowercase names.
-    """
+    """Standardise common column names to TitleCase."""
     mapping = {
         "segment": "Segment",
         "cluster": "Cluster",
@@ -121,12 +123,38 @@ def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
         "gender": "Gender",
     }
     rename = {k: v for k, v in mapping.items() if k in df.columns and v not in df.columns}
-    df = df.rename(columns=rename)
-    return df
+    return df.rename(columns=rename)
 
 
 # -------------------------------------------------
-# Header (hero + subtitle)
+# Short number formatter (max ~4 characters before suffix)
+# -------------------------------------------------
+def format_short(value: float) -> str:
+    """Format large numbers like 98.3k, 2.1M, 216M."""
+    if value is None or not np.isfinite(value):
+        return "-"
+    v = float(value)
+    sign = "-" if v < 0 else ""
+    v = abs(v)
+
+    if v >= 1_000_000_000:
+        num, suffix = v / 1_000_000_000, "B"
+    elif v >= 1_000_000:
+        num, suffix = v / 1_000_000, "M"
+    elif v >= 1_000:
+        num, suffix = v / 1_000, "k"
+    else:
+        return f"{sign}{v:.0f}"
+
+    # 2 decimal digits then trim to at most 4 chars
+    s = f"{num:.2f}".rstrip("0").rstrip(".")
+    if len(s) > 4:
+        s = s[:4]
+    return f"{sign}{s}{suffix}"
+
+
+# -------------------------------------------------
+# Header (hero)
 # -------------------------------------------------
 left, right = st.columns([0.78, 0.22])
 with left:
@@ -155,9 +183,7 @@ else:
     dataset_label = None
 
 uploaded = st.sidebar.file_uploader(
-    "…or upload CSV/Parquet",
-    type=["csv", "parquet"],
-    key="uploader",
+    "…or upload CSV/Parquet", type=["csv", "parquet"], key="uploader"
 )
 
 sample_choice = st.sidebar.selectbox(
@@ -168,16 +194,13 @@ sample_choice = st.sidebar.selectbox(
 )
 sample_max = None if sample_choice == "No limit" else int(sample_choice.replace("k", "000"))
 
-# Load data (uploaded takes priority)
+# Load data
 if uploaded is not None:
-    if uploaded.name.endswith(".parquet"):
-        df = pd.read_parquet(uploaded)
-    else:
-        df = pd.read_csv(uploaded)
+    df = pd.read_parquet(uploaded) if uploaded.name.endswith(".parquet") else pd.read_csv(uploaded)
 elif dataset_label:
     df = load_table(files[dataset_label], sample_max)
 else:
-    st.info("➡️ Add a dataset to your repo (e.g. Output/ or Notebook/) or upload one from the sidebar.")
+    st.info("➡️ Add a dataset to your repo (Output/ or Notebook/) or upload one from the sidebar.")
     st.stop()
 
 df = normalize_cols(df)
@@ -186,53 +209,49 @@ if df.empty:
     st.stop()
 
 # -------------------------------------------------
-# Sidebar – filters (all with unique keys)
+# Sidebar – filters
 # -------------------------------------------------
 st.sidebar.subheader("🔎 Filters")
 work = df.copy()
 
 
-def multiselect_filter(label: str, col: str) -> pd.DataFrame:
+def multiselect_filter(label: str, col: str) -> None:
     global work
     values = sorted(work[col].dropna().astype(str).unique())
     selected = st.sidebar.multiselect(label, values, default=[], key=f"ms_{col}")
     if selected:
         work = work[work[col].astype(str).isin(selected)]
-    return work
 
 
-# Segment / Cluster / Gender
 for col in ("Segment", "Cluster", "Gender"):
     if col in work.columns:
-        work = multiselect_filter(col, col)
+        multiselect_filter(col, col)
 
-# Location-like column
 loc_col = next(
     (c for c in ["Location", "Branch", "City", "State", "Region", "Country"] if c in work.columns),
     None,
 )
 if loc_col:
-    work = multiselect_filter(loc_col, loc_col)
+    multiselect_filter(loc_col, loc_col)
 
 
-def add_range_filter(col: str, step: float = 1.0) -> pd.DataFrame:
+def add_range_filter(col: str, step: float = 1.0) -> None:
     global work
-    col_min, col_max = float(work[col].min()), float(work[col].max())
+    mn, mx = float(work[col].min()), float(work[col].max())
     a, b = st.sidebar.slider(
         f"{col} range",
-        min_value=col_min,
-        max_value=col_max,
-        value=(col_min, col_max),
+        min_value=mn,
+        max_value=mx,
+        value=(mn, mx),
         step=step,
         key=f"rng_{col}",
     )
     work = work[(work[col] >= a) & (work[col] <= b)]
-    return work
 
 
-for col, step in (("Monetary", 1.0), ("Frequency", 1.0), ("Recency", 1.0)):
-    if col in work.columns and np.isfinite(work[col].min()) and np.isfinite(work[col].max()):
-        work = add_range_filter(col, step)
+for col_name, step_val in (("Monetary", 1.0), ("Frequency", 1.0), ("Recency", 1.0)):
+    if col_name in work.columns and np.isfinite(work[col_name].min()) and np.isfinite(work[col_name].max()):
+        add_range_filter(col_name, step_val)
 
 # Date range
 date_col = next((c for c in ["TransactionDate", "Date"] if c in work.columns), None)
@@ -251,7 +270,7 @@ if date_col:
         except Exception:
             pass
 
-# CustomerID contains
+# CustomerID search
 if "CustomerID" in work.columns:
     q = st.sidebar.text_input("CustomerID contains", key="cust_contains")
     if q.strip():
@@ -260,22 +279,25 @@ if "CustomerID" in work.columns:
 st.sidebar.caption(f"Filtered rows: {len(work):,}")
 
 # -------------------------------------------------
-# KPI donuts + cards
+# KPI donuts + cards (with short numbers)
 # -------------------------------------------------
-def donut_kpi(title: str, value: float, fmt: str = ",.0f") -> go.Figure:
+def donut_kpi(title: str, value: float) -> go.Figure:
+    """Donut with short center text and LinkedIn-style blue ring."""
+    short = format_short(value)
     fig = go.Figure(
         go.Pie(
             labels=[title],
             values=[max(float(value), 1e-9)],
             hole=0.72,
             textinfo="none",
+            marker=dict(colors=["#2563eb", "#e5e7eb"]),
         )
     )
     fig.update_layout(
         showlegend=False,
         annotations=[
             dict(
-                text=f"{value:{fmt}}",
+                text=short,
                 x=0.5,
                 y=0.5,
                 font_size=22,
@@ -291,7 +313,7 @@ def donut_kpi(title: str, value: float, fmt: str = ",.0f") -> go.Figure:
 c1, c2, c3, c4 = st.columns(4)
 
 custs = work["CustomerID"].nunique() if "CustomerID" in work.columns else len(work)
-rows = len(work)
+rows_count = len(work)
 amt_col = next(
     (c for c in ["Monetary", "Amount", "TransactionAmount", "TotalAmount"] if c in work.columns),
     None,
@@ -306,23 +328,23 @@ with c1:
 
 with c2:
     st.markdown("<div class='kpi-card'><div class='kpi-title'>Rows (Tx)</div>", unsafe_allow_html=True)
-    st.plotly_chart(donut_kpi("Rows (Tx)", rows), use_container_width=True)
+    st.plotly_chart(donut_kpi("Rows (Tx)", rows_count), use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 with c3:
     st.markdown("<div class='kpi-card'><div class='kpi-title'>Total Monetary</div>", unsafe_allow_html=True)
-    st.plotly_chart(donut_kpi("Total Monetary", total_amt, fmt=",.2f"), use_container_width=True)
+    st.plotly_chart(donut_kpi("Total Monetary", total_amt), use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 with c4:
     st.markdown("<div class='kpi-card'><div class='kpi-title'>Avg Monetary</div>", unsafe_allow_html=True)
-    st.plotly_chart(donut_kpi("Avg Monetary", avg_amt, fmt=",.2f"), use_container_width=True)
+    st.plotly_chart(donut_kpi("Avg Monetary", avg_amt), use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
 # -------------------------------------------------
-# Tabs (LinkedIn-style navigation)
+# Tabs – Overview / Segments / Customers / Seasonality / Geography / Export
 # -------------------------------------------------
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     ["Overview", "Segments", "Customers", "Seasonality", "Geography", "Data / Export"]
@@ -336,6 +358,10 @@ with tab1:
     for ax, col in zip(cols, dist_cols):
         with ax:
             fig = px.histogram(work, x=col, nbins=40, title=f"{col} Distribution")
+            fig.update_layout(
+                xaxis_tickformat=".2s",  # short axis numbers: 10k, 2M
+                yaxis_tickformat=".2s",
+            )
             st.plotly_chart(fig, use_container_width=True)
 
 # --- Segments ---
@@ -345,6 +371,7 @@ with tab2:
         seg_counts = work["Segment"].value_counts().reset_index()
         seg_counts.columns = ["Segment", "Count"]
         fig = px.bar(seg_counts, x="Segment", y="Count", title="Customers per Segment")
+        fig.update_layout(yaxis_tickformat=".2s")
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No 'Segment' column found.")
@@ -375,6 +402,7 @@ with tab4:
             s = t.groupby(t[dcol].dt.date)[amt_col].sum().reset_index()
             s.columns = ["Date", "Total"]
             fig = px.line(s, x="Date", y="Total", title="Daily Total Amount")
+            fig.update_layout(yaxis_tickformat=".2s")
             st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Need a Date/TransactionDate column and an amount column.")
@@ -405,6 +433,7 @@ with tab5:
                 .head(30)
             )
             fig = px.bar(top, x=reg, y="Count", title=f"Top {reg} by Count")
+        fig.update_layout(yaxis_tickformat=".2s")
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No region/city/branch columns detected.")
